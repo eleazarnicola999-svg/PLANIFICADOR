@@ -104,7 +104,10 @@ export default function PlannerV5() {
   const [customLocs, setCustomLocs] = useState([]);
   const [selDay, setSelDay] = useState(todayKey());
   const [loaded, setLoaded] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("idle"); // idle | saving | saved | error
 
+  // Load on mount
   useEffect(() => { (async () => {
     setBacklog(await load("p5-backlog", {}));
     setDays(await load("p5-days", {}));
@@ -112,13 +115,77 @@ export default function PlannerV5() {
     setLoaded(true);
   })(); }, []);
 
-  useEffect(() => { if (loaded) save("p5-backlog", backlog); }, [backlog, loaded]);
-  useEffect(() => { if (loaded) save("p5-days", days); }, [days, loaded]);
-  useEffect(() => { if (loaded) save("p5-locs", customLocs); }, [customLocs, loaded]);
+  // Track changes (mark dirty instead of auto-saving)
+  const updateBacklog = (v) => { setBacklog(v); setDirty(true); setSaveStatus("idle"); };
+  const updateDays = (v) => { setDays(v); setDirty(true); setSaveStatus("idle"); };
+  const updateLocs = (v) => { setCustomLocs(v); setDirty(true); setSaveStatus("idle"); };
+
+  // Manual save
+  const doSave = async () => {
+    setSaveStatus("saving");
+    try {
+      await save("p5-backlog", backlog);
+      await save("p5-days", days);
+      await save("p5-locs", customLocs);
+      setDirty(false);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2500);
+    } catch (e) {
+      console.error("Save error:", e);
+      setSaveStatus("error");
+    }
+  };
+
+  // Reload from cloud
+  const doReload = async () => {
+    setSaveStatus("saving");
+    setBacklog(await load("p5-backlog", {}));
+    setDays(await load("p5-days", {}));
+    setCustomLocs(await load("p5-locs", []));
+    setDirty(false);
+    setSaveStatus("saved");
+    setTimeout(() => setSaveStatus("idle"), 2500);
+  };
+
+  // Terminar día: incomplete tasks → backlog
+  const terminarDia = (dk) => {
+    const dayData = days[dk] || { tasks: [] };
+    const tasks = dayData.tasks || [];
+    const incomplete = tasks.filter((t) => !t.done);
+    const completed = tasks.filter((t) => t.done);
+
+    if (incomplete.length === 0) return;
+
+    // Ensure a "Pendientes" list exists in backlog
+    let newBacklog = { ...backlog };
+    let lists = newBacklog._lists || [];
+    let pendienteList = lists.find((l) => l.name === "Pendientes");
+    if (!pendienteList) {
+      pendienteList = { id: uid(), name: "Pendientes", color: "#E74C3C" };
+      lists = [...lists, pendienteList];
+      newBacklog._lists = lists;
+      newBacklog[pendienteList.id] = [];
+    }
+
+    // Move incomplete tasks to backlog (strip scheduling info)
+    const tasksToMove = incomplete.map((t) => ({
+      ...t, done: false, timeFrom: null, timeTo: null,
+      movedFrom: dk, movedAt: new Date().toISOString(),
+    }));
+    newBacklog[pendienteList.id] = [...(newBacklog[pendienteList.id] || []), ...tasksToMove];
+
+    // Keep only completed tasks in the day
+    const newDays = { ...days, [dk]: { ...dayData, tasks: completed, terminado: true } };
+
+    setBacklog(newBacklog);
+    setDays(newDays);
+    setDirty(true);
+    setSaveStatus("idle");
+  };
 
   const allLocations = [...DEFAULT_LOCATIONS, ...customLocs];
   const dayData = days[selDay] || { tasks: [] };
-  const setDayData = (d) => setDays({ ...days, [selDay]: d });
+  const setDayData = (d) => updateDays({ ...days, [selDay]: d });
 
   const totalBacklog = (backlog._lists || []).reduce((s, l) => s + (backlog[l.id] || []).length, 0);
 
@@ -135,7 +202,39 @@ export default function PlannerV5() {
         input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(0)}
       `}</style>
       <div style={{ maxWidth: "680px", margin: "0 auto", padding: "20px 16px 80px" }}>
-        <div style={{ fontSize: "10px", letterSpacing: ".2em", textTransform: "uppercase", color: "#6B5540", ...SS.mono, marginBottom: "14px" }}>Planificador</div>
+        {/* Header with save */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+          <div style={{ fontSize: "10px", letterSpacing: ".2em", textTransform: "uppercase", color: "#6B5540", ...SS.mono }}>Planificador</div>
+          <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+            {/* Status indicator */}
+            {dirty && saveStatus === "idle" && (
+              <span style={{ fontSize: "9px", padding: "3px 8px", borderRadius: "10px", background: "rgba(231,76,60,0.1)", color: "#E74C3C", fontWeight: "600" }}>● Sin guardar</span>
+            )}
+            {saveStatus === "saving" && (
+              <span style={{ fontSize: "9px", padding: "3px 8px", borderRadius: "10px", background: "rgba(0,0,0,0.05)", color: "rgba(0,0,0,0.4)" }}>Guardando...</span>
+            )}
+            {saveStatus === "saved" && (
+              <span style={{ fontSize: "9px", padding: "3px 8px", borderRadius: "10px", background: "rgba(46,204,113,0.1)", color: "#2ECC71", fontWeight: "600" }}>✓ Guardado</span>
+            )}
+            {saveStatus === "error" && (
+              <span style={{ fontSize: "9px", padding: "3px 8px", borderRadius: "10px", background: "rgba(231,76,60,0.1)", color: "#E74C3C" }}>Error al guardar</span>
+            )}
+            {/* Reload button */}
+            <div onClick={doReload} title="Recargar datos" style={{
+              padding: "5px 8px", borderRadius: "8px", cursor: "pointer", fontSize: "14px",
+              background: "rgba(0,0,0,0.03)", border: "1px solid rgba(0,0,0,0.06)",
+            }}>🔄</div>
+            {/* Save button */}
+            <div onClick={doSave} style={{
+              padding: "5px 14px", borderRadius: "8px", cursor: dirty ? "pointer" : "default",
+              background: dirty ? "linear-gradient(135deg,#6B5540,#8B7355)" : "rgba(0,0,0,0.04)",
+              color: dirty ? "#fff" : "rgba(0,0,0,0.3)",
+              fontSize: "12px", fontWeight: "600", fontFamily: "'DM Sans',sans-serif",
+              transition: "all .2s", border: dirty ? "none" : "1px solid rgba(0,0,0,0.06)",
+            }}>💾 Guardar</div>
+          </div>
+        </div>
+
         <div style={{ display: "flex", gap: "6px", marginBottom: "20px", flexWrap: "wrap" }}>
           <Tab active={view === "day"} onClick={() => setView("day")}>🎯 Día</Tab>
           <Tab active={view === "week"} onClick={() => setView("week")}>📅 Semana</Tab>
@@ -143,10 +242,10 @@ export default function PlannerV5() {
           <Tab active={view === "locations"} onClick={() => setView("locations")}>📍 Lugares</Tab>
         </div>
 
-        {view === "day" && <DayView dk={selDay} setDk={setSelDay} data={dayData} setData={setDayData} locs={allLocations} backlog={backlog} setBacklog={setBacklog} />}
+        {view === "day" && <DayView dk={selDay} setDk={setSelDay} data={dayData} setData={setDayData} locs={allLocations} backlog={backlog} setBacklog={updateBacklog} terminarDia={terminarDia} />}
         {view === "week" && <WeekView days={days} setSelDay={(dk) => { setSelDay(dk); setView("day"); }} />}
-        {view === "backlog" && <BacklogView backlog={backlog} setBacklog={setBacklog} locs={customLocs} />}
-        {view === "locations" && <LocView locs={customLocs} setLocs={setCustomLocs} />}
+        {view === "backlog" && <BacklogView backlog={backlog} setBacklog={updateBacklog} locs={customLocs} />}
+        {view === "locations" && <LocView locs={customLocs} setLocs={updateLocs} />}
       </div>
     </div>
   );
@@ -155,14 +254,18 @@ export default function PlannerV5() {
 /* ═══════════════════════════════════════
    DAY VIEW — the main workflow
    ═══════════════════════════════════════ */
-function DayView({ dk, setDk, data, setData, locs, backlog, setBacklog }) {
+function DayView({ dk, setDk, data, setData, locs, backlog, setBacklog, terminarDia }) {
   const [phase, setPhase] = useState("input"); // input | summary | timeline | plan
   const tasks = data.tasks || [];
+  const isTerminado = data.terminado || false;
 
   const navDay = (off) => { const d = new Date(dk + "T12:00:00"); d.setDate(d.getDate() + off); setDk(dateKey(d)); };
   const d = new Date(dk + "T12:00:00");
   const dayNames = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
   const months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+
+  const doneCount = tasks.filter((t) => t.done).length;
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
 
   return (
     <div>
@@ -170,7 +273,10 @@ function DayView({ dk, setDk, data, setData, locs, backlog, setBacklog }) {
         <Btn small onClick={() => navDay(-1)}>←</Btn>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: "18px", fontWeight: "700" }}>{dayNames[d.getDay()]} {d.getDate()} {months[d.getMonth()]}</div>
-          <div style={{ fontSize: "11px", color: "rgba(0,0,0,0.3)", ...SS.mono }}>{tasks.length} tareas</div>
+          <div style={{ fontSize: "11px", color: "rgba(0,0,0,0.3)", ...SS.mono }}>
+            {tasks.length} tareas{doneCount > 0 ? ` · ✓${doneCount}` : ""}
+            {isTerminado && <span style={{ color: "#2ECC71", marginLeft: "6px" }}>✓ Día terminado</span>}
+          </div>
         </div>
         <Btn small onClick={() => navDay(1)}>→</Btn>
       </div>
@@ -186,7 +292,45 @@ function DayView({ dk, setDk, data, setData, locs, backlog, setBacklog }) {
 
       {phase === "input" && <TaskInput tasks={tasks} setTasks={(t) => setData({ ...data, tasks: t })} locs={locs} backlog={backlog} setBacklog={setBacklog} dk={dk} />}
       {phase === "summary" && <Summary tasks={tasks} setTasks={(t) => setData({ ...data, tasks: t })} />}
-      {phase === "plan" && <Plan tasks={tasks} setTasks={(t) => setData({ ...data, tasks: t })} locs={locs} />}
+      {phase === "plan" && (
+        <div>
+          <Plan tasks={tasks} setTasks={(t) => setData({ ...data, tasks: t })} locs={locs} />
+
+          {/* Terminar día */}
+          {tasks.length > 0 && !isTerminado && (
+            <div style={{ marginTop: "24px", borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: "20px" }}>
+              {!showEndConfirm ? (
+                <div onClick={() => setShowEndConfirm(true)} style={{
+                  padding: "14px", borderRadius: "10px", cursor: "pointer", textAlign: "center",
+                  background: "rgba(231,76,60,0.04)", border: "1px solid rgba(231,76,60,0.15)",
+                  color: "#E74C3C", fontSize: "13px", fontWeight: "600", transition: "all .2s",
+                }}>
+                  🏁 Terminar día
+                </div>
+              ) : (
+                <div style={{ padding: "16px", borderRadius: "10px", background: "rgba(231,76,60,0.04)", border: "1px solid rgba(231,76,60,0.15)" }}>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#E74C3C", marginBottom: "8px" }}>🏁 ¿Terminar este día?</div>
+                  <div style={{ fontSize: "12px", color: "rgba(0,0,0,0.5)", marginBottom: "12px" }}>
+                    {doneCount} tarea{doneCount !== 1 ? "s" : ""} completada{doneCount !== 1 ? "s" : ""}.
+                    {tasks.length - doneCount > 0 && <span style={{ color: "#E74C3C" }}> {tasks.length - doneCount} pendiente{tasks.length - doneCount !== 1 ? "s" : ""} volverán al backlog (lista "Pendientes").</span>}
+                  </div>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <Btn small onClick={() => setShowEndConfirm(false)}>Cancelar</Btn>
+                    <Btn small primary onClick={() => { terminarDia(dk); setShowEndConfirm(false); }}>Sí, terminar día</Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {isTerminado && (
+            <div style={{ marginTop: "20px", padding: "14px", borderRadius: "10px", background: "rgba(46,204,113,0.06)", border: "1px solid rgba(46,204,113,0.15)", textAlign: "center" }}>
+              <span style={{ fontSize: "13px", color: "#2ECC71", fontWeight: "600" }}>✓ Día terminado</span>
+              <div style={{ fontSize: "11px", color: "rgba(0,0,0,0.35)", marginTop: "4px" }}>Las tareas pendientes fueron enviadas al backlog.</div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
