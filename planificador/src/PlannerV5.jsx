@@ -347,6 +347,7 @@ function TaskInput({ tasks, setTasks, locs, backlog, setBacklog, dk }) {
   const [timeFrom, setTimeFrom] = useState("");
   const [timeTo, setTimeTo] = useState("");
   const [delegateTo, setDelegateTo] = useState("");
+  const [followUp, setFollowUp] = useState(false);
 
   const toggleLoc = (id) => {
     setSelLocs(selLocs.includes(id) ? selLocs.filter((l) => l !== id) : [...selLocs, id]);
@@ -366,10 +367,11 @@ function TaskInput({ tasks, setTasks, locs, backlog, setBacklog, dk }) {
       timeFrom: mode === "presencial" ? timeFrom : null,
       timeTo: mode === "presencial" ? timeTo : null,
       delegateTo: mode === "delegar" ? (delegateTo || null) : null,
+      followUp,
       scheduled: false,
     };
     setTasks([...tasks, t]);
-    setText(""); setSelLocs([]); setCustomLocs([]); setCustomInput(""); setTimeFrom(""); setTimeTo("");
+    setText(""); setSelLocs([]); setCustomLocs([]); setCustomInput(""); setTimeFrom(""); setTimeTo(""); setFollowUp(false);
   };
 
   const removeTask = (id) => setTasks(tasks.filter((t) => t.id !== id));
@@ -401,6 +403,17 @@ function TaskInput({ tasks, setTasks, locs, backlog, setBacklog, dk }) {
             }}>{m.icon} {m.label}</div>
           ))}
         </div>
+
+        {/* Follow-up toggle */}
+        <div onClick={() => setFollowUp(!followUp)} style={{
+          display: "inline-flex", alignItems: "center", gap: "6px",
+          padding: "6px 12px", borderRadius: "16px", fontSize: "11px", cursor: "pointer",
+          marginBottom: "12px", transition: "all .15s",
+          background: followUp ? "rgba(241,196,15,0.15)" : "rgba(0,0,0,0.02)",
+          border: `1px solid ${followUp ? "rgba(241,196,15,0.5)" : "rgba(0,0,0,0.08)"}`,
+          color: followUp ? "#C9930A" : "rgba(0,0,0,0.45)",
+          fontWeight: followUp ? "600" : "400",
+        }}>📌 Seguimiento {followUp ? "✓" : ""}</div>
 
         {/* Presencial: time range */}
         {mode === "presencial" && (
@@ -610,6 +623,7 @@ function TaskCardWithSteps({ t, md, pri, taskLocs, taskCustom, tasks, setTasks, 
             ))}
             {t.timeFrom && <span style={{ fontSize: "9px", padding: "2px 8px", borderRadius: "8px", background: "rgba(231,76,60,0.1)", color: "#E74C3C", ...SS.mono }}>{fmt12(t.timeFrom)}→{fmt12(t.timeTo)}</span>}
             {t.delegateTo && <span style={{ fontSize: "9px", padding: "2px 8px", borderRadius: "8px", background: "rgba(52,152,219,0.1)", color: "#3498DB" }}>📤 {t.delegateTo}</span>}
+            {t.followUp && <span style={{ fontSize: "9px", padding: "2px 8px", borderRadius: "8px", background: "rgba(241,196,15,0.15)", color: "#C9930A", border: "1px solid rgba(241,196,15,0.3)", fontWeight: "600" }}>📌 Seguimiento</span>}
           </div>
           {/* Develop task button - separate row */}
           <div onClick={(e) => { e.stopPropagation(); setShowSteps(!showSteps); }} style={{
@@ -909,6 +923,27 @@ function Plan({ tasks, setTasks, locs }) {
   const toggleStep = (taskId, stepId) => {
     setTasks(tasks.map((t) => t.id === taskId ? { ...t, steps: (t.steps || []).map((s) => s.id === stepId ? { ...s, done: !s.done } : s) } : t));
   };
+  const completeWithNext = (taskId, nextText) => {
+    const task = tasks.find((x) => x.id === taskId);
+    if (!task || !nextText.trim()) return;
+    const newTask = {
+      ...task,
+      id: uid(),
+      text: nextText.trim(),
+      done: false,
+      steps: [],
+      followUp: true,
+      timeFrom: null,
+      timeTo: null,
+      scheduled: false,
+      prevTaskId: taskId,
+      createdAt: new Date().toISOString(),
+    };
+    setTasks([
+      ...tasks.map((t) => t.id === taskId ? { ...t, done: true, nextTaskId: newTask.id } : t),
+      newTask,
+    ]);
+  };
 
   const doneCount = tasks.filter((t) => t.done).length;
   const totalSteps = tasks.reduce((s, t) => s + (t.steps || []).length, 0);
@@ -958,7 +993,7 @@ function Plan({ tasks, setTasks, locs }) {
       )}
 
       {/* Scheduled tasks - chronological */}
-      {scheduled.map((t) => <PlanTaskCard key={t.id} t={t} locs={locs} toggleDone={toggleDone} toggleStep={toggleStep} />)}
+      {scheduled.map((t) => <PlanTaskCard key={t.id} t={t} locs={locs} toggleDone={toggleDone} toggleStep={toggleStep} completeWithNext={completeWithNext} />)}
 
       {/* Unscheduled */}
       {unscheduled.length > 0 && (
@@ -966,7 +1001,7 @@ function Plan({ tasks, setTasks, locs }) {
           <div style={{ fontSize: "10px", color: "rgba(0,0,0,0.3)", letterSpacing: "0.08em", marginBottom: "8px", paddingBottom: "6px", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
             SIN HORARIO ASIGNADO ({unscheduled.length})
           </div>
-          {unscheduled.map((t) => <PlanTaskCard key={t.id} t={t} locs={locs} toggleDone={toggleDone} toggleStep={toggleStep} />)}
+          {unscheduled.map((t) => <PlanTaskCard key={t.id} t={t} locs={locs} toggleDone={toggleDone} toggleStep={toggleStep} completeWithNext={completeWithNext} />)}
         </div>
       )}
 
@@ -975,14 +1010,32 @@ function Plan({ tasks, setTasks, locs }) {
   );
 }
 
-function PlanTaskCard({ t, locs, toggleDone, toggleStep }) {
+function PlanTaskCard({ t, locs, toggleDone, toggleStep, completeWithNext }) {
   const [expanded, setExpanded] = useState(false);
+  const [showCompleteDialog, setShowCompleteDialog] = useState(false);
+  const [nextText, setNextText] = useState("");
   const md = MODES.find((m) => m.id === t.mode);
   const pri = PRIORITIES.find((p) => p.id === t.priority);
   const steps = t.steps || [];
   const stepsDone = steps.filter((s) => s.done).length;
   const mColor = md?.color || "#555";
   const allLocs = [...DEFAULT_LOCATIONS, ...(locs || [])];
+
+  const handleCheckClick = (e) => {
+    e.stopPropagation();
+    if (t.followUp && !t.done) {
+      setShowCompleteDialog(true);
+    } else {
+      toggleDone(t.id);
+    }
+  };
+  const doJustComplete = () => { toggleDone(t.id); setShowCompleteDialog(false); setNextText(""); };
+  const doCompleteAndNext = () => {
+    if (!nextText.trim() || !completeWithNext) return;
+    completeWithNext(t.id, nextText);
+    setShowCompleteDialog(false);
+    setNextText("");
+  };
 
   return (
     <div style={{
@@ -1006,7 +1059,7 @@ function PlanTaskCard({ t, locs, toggleDone, toggleStep }) {
           {/* Content */}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-              <span onClick={(e) => { e.stopPropagation(); toggleDone(t.id); }} style={{ fontSize: "16px", cursor: "pointer", flexShrink: 0 }}>
+              <span onClick={handleCheckClick} style={{ fontSize: "16px", cursor: "pointer", flexShrink: 0 }}>
                 {t.done ? "✅" : "⬜"}
               </span>
               <span style={{ fontSize: "14px", color: "#1A1A1A", fontWeight: "500", textDecoration: t.done ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.text}</span>
@@ -1024,6 +1077,7 @@ function PlanTaskCard({ t, locs, toggleDone, toggleStep }) {
                 <span key={i} style={{ fontSize: "9px", padding: "2px 7px", borderRadius: "8px", background: "rgba(139,115,85,0.08)", color: "#6B5540" }}>📍 {cl}</span>
               ))}
               {t.delegateTo && <span style={{ fontSize: "9px", padding: "2px 7px", borderRadius: "8px", background: "rgba(52,152,219,0.08)", color: "#3498DB" }}>📤 {t.delegateTo}</span>}
+              {t.followUp && <span style={{ fontSize: "9px", padding: "2px 7px", borderRadius: "8px", background: "rgba(241,196,15,0.15)", color: "#C9930A", border: "1px solid rgba(241,196,15,0.3)", fontWeight: "600" }}>📌 Seguimiento</span>}
             </div>
 
             {/* Steps toggle */}
@@ -1045,6 +1099,34 @@ function PlanTaskCard({ t, locs, toggleDone, toggleStep }) {
           </div>
         </div>
       </div>
+
+      {/* Complete follow-up dialog */}
+      {showCompleteDialog && (
+        <div style={{
+          margin: "0 14px 12px", padding: "12px", borderRadius: "8px",
+          background: "rgba(241,196,15,0.06)", border: "1px solid rgba(241,196,15,0.25)",
+        }}>
+          <div style={{ fontSize: "11px", color: "#C9930A", fontWeight: "600", marginBottom: "8px" }}>
+            📌 Completar tarea de seguimiento
+          </div>
+          <div style={{ fontSize: "11px", color: "rgba(0,0,0,0.5)", marginBottom: "10px" }}>
+            ¿Esta tarea continúa como un siguiente paso? Escribe el próximo paso, o solo márcala como completada.
+          </div>
+          <input
+            value={nextText}
+            onChange={(e) => setNextText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && nextText.trim() && doCompleteAndNext()}
+            placeholder="Siguiente paso (ej: Llamar de nuevo el lunes)"
+            autoFocus
+            style={{ ...SS.input, width: "100%", fontSize: "12px", marginBottom: "10px" }}
+          />
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+            <Btn small primary onClick={doCompleteAndNext} disabled={!nextText.trim()}>→ Completar + siguiente</Btn>
+            <Btn small onClick={doJustComplete}>✓ Solo completar</Btn>
+            <Btn small onClick={() => { setShowCompleteDialog(false); setNextText(""); }}>Cancelar</Btn>
+          </div>
+        </div>
+      )}
 
       {/* Expanded steps */}
       {expanded && steps.length > 0 && (
@@ -1149,6 +1231,7 @@ function BacklogView({ backlog, setBacklog, locs }) {
   const [customLocs, setCustomLocs] = useState([]);
   const [customInput, setCustomInput] = useState("");
   const [delegateTo, setDelegateTo] = useState("");
+  const [followUp, setFollowUp] = useState(false);
 
   const toggleLoc = (id) => setSelLocs(selLocs.includes(id) ? selLocs.filter((l) => l !== id) : [...selLocs, id]);
   const addCustomLoc = () => { if (customInput.trim()) { setCustomLocs([...customLocs, customInput.trim()]); setCustomInput(""); } };
@@ -1183,10 +1266,11 @@ function BacklogView({ backlog, setBacklog, locs }) {
       id: uid(), text: text.trim(), mode, duration: dur, priority: pri,
       locations: selLocs, customLocations: customLocs.length > 0 ? customLocs : null,
       delegateTo: mode === "delegar" ? (delegateTo || null) : null,
+      followUp,
       createdAt: new Date().toISOString(),
     };
     setBacklog({ ...backlog, [activeList]: [...items, task] });
-    setText(""); setSelLocs([]); setCustomLocs([]); setCustomInput(""); setDelegateTo("");
+    setText(""); setSelLocs([]); setCustomLocs([]); setCustomInput(""); setDelegateTo(""); setFollowUp(false);
   };
   const removeTask = (id) => setBacklog({ ...backlog, [activeList]: items.filter((t) => t.id !== id) });
 
@@ -1280,6 +1364,17 @@ function BacklogView({ backlog, setBacklog, locs }) {
                 ))}
               </div>
 
+              {/* Follow-up toggle */}
+              <div onClick={() => setFollowUp(!followUp)} style={{
+                display: "inline-flex", alignItems: "center", gap: "6px",
+                padding: "5px 11px", borderRadius: "14px", fontSize: "11px", cursor: "pointer",
+                marginBottom: "12px", transition: "all .15s",
+                background: followUp ? "rgba(241,196,15,0.15)" : "rgba(0,0,0,0.02)",
+                border: `1px solid ${followUp ? "rgba(241,196,15,0.5)" : "rgba(0,0,0,0.08)"}`,
+                color: followUp ? "#C9930A" : "rgba(0,0,0,0.45)",
+                fontWeight: followUp ? "600" : "400",
+              }}>📌 Seguimiento {followUp ? "✓" : ""}</div>
+
               {/* Delegar name */}
               {mode === "delegar" && (
                 <div style={{ marginBottom: "12px" }}>
@@ -1368,6 +1463,7 @@ function BacklogView({ backlog, setBacklog, locs }) {
                           <span key={i} style={{ fontSize: "9px", padding: "2px 7px", borderRadius: "8px", background: "rgba(139,115,85,0.08)", color: "#6B5540" }}>📍 {cl}</span>
                         ))}
                         {t.delegateTo && <span style={{ fontSize: "9px", padding: "2px 7px", borderRadius: "8px", background: "rgba(52,152,219,0.08)", color: "#3498DB" }}>📤 {t.delegateTo}</span>}
+                        {t.followUp && <span style={{ fontSize: "9px", padding: "2px 7px", borderRadius: "8px", background: "rgba(241,196,15,0.15)", color: "#C9930A", border: "1px solid rgba(241,196,15,0.3)", fontWeight: "600" }}>📌 Seguimiento</span>}
                       </div>
                     </div>
                     <span onClick={() => removeTask(t.id)} style={{ cursor: "pointer", color: "rgba(0,0,0,0.15)", fontSize: "14px", padding: "2px 4px" }}>×</span>
